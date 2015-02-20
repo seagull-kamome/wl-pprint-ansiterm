@@ -23,7 +23,7 @@ library
   -- other-modules:       
   other-extensions:    TypeFamilies
   build-depends:       base == 4.*,
-                     mtl >=2.2 && <2.3,
+                     mtl == 2.*,
                      wl-pprint-extras >= 3.5,
                      ansi-terminal >= 0.6,
                      bytestring       >= 0.9.1   && < 0.11,
