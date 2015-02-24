@@ -56,6 +56,7 @@ import Control.Monad.IO.Class
 import Data.Foldable (toList)
 import Text.PrettyPrint.Free
 import qualified System.Console.ANSI as ANSI
+import qualified System.Console.Terminal.Size as TSIZE
 import System.IO
 
 import qualified Data.ByteString as B
@@ -99,13 +100,15 @@ data Effect
   deriving (Eq)
 
 
---ring :: Bell -> TermDoc
---ring b = pure (Ring b)
-
-
 
 type TermDoc = Doc Effect
 type SimpleTermDoc = SimpleDoc Effect
+
+-- -------------------------------------------------------------------------
+
+--ring :: Bell -> TermDoc
+--ring b = pure (Ring b)
+
 
 with :: ScopedEffect -> TermDoc -> TermDoc
 with cmd = pure (Push cmd) `enclose` pure Pop
@@ -139,8 +142,7 @@ cyan = foreground ANSI.Cyan
 white = foreground ANSI.White
 
 
--- kludgeWindowSize :: IO Int
--- kludgeWindowSize = fail "missing ncurses"
+-- -------------------------------------------------------------------------
 
 displayLn :: (MonadIO m, PrettyTerm t) => t -> m ()
 displayLn t = displayDoc 0.6 (prettyTerm t <> linebreak)
@@ -152,7 +154,9 @@ displayDoc :: (MonadIO m, PrettyTerm t) => Float -> t -> m ()
 displayDoc = displayDoc' stdout
 
 displayDoc' :: (MonadIO m, PrettyTerm t) => Handle -> Float -> t -> m ()
-displayDoc' h ribbon doc = displayDoc'' h ribbon 80 doc
+displayDoc' h ribbon doc = do
+  w <- liftIO $ maybe 80 TSIZE.width <$> TSIZE.hSize h
+  displayDoc'' h ribbon w doc
 
 displayDoc'' :: (MonadIO m, PrettyTerm t) => Handle -> Float -> Int -> t -> m ()
 displayDoc'' h ribbon cols doc = hDisplaySimpleTermDoc h $ renderPretty ribbon cols (prettyTerm doc)
@@ -195,6 +199,7 @@ hDisplaySimpleTermDoc h = liftIO . go [] where
      Else l r -> effToSGR l <|> effToSGR r
 
 
+-- -------------------------------------------------------------------------
 
 class Pretty t => PrettyTerm t where
   prettyTerm :: t -> TermDoc
