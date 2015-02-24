@@ -36,25 +36,28 @@ module System.Console.ANSI.PrettyPrint (
   -- * A Color Pretty Printer
   , TermDoc
   , display
---  , displayLn
+  , displayLn
   -- ** Progressively less magical formatting
---  , displayDoc
---  , displayDoc'
---  , displayDoc''
+  , displayDoc
+  , displayDoc'
+  , displayDoc''
+  , displaySimpleTermDoc
+  , hDisplaySimpleTermDoc
   -- ** A Classy Interface
   , PrettyTerm(..)
   -- ** Evaluation
   , SimpleTermDoc
 --  , evalTermState
-  , displayCap
+--  , displayCap
   ) where
 
 import Control.Applicative
-import Control.Monad.State
-import Data.Traversable
+import Control.Monad.IO.Class
 import Data.Foldable (toList)
 import Text.PrettyPrint.Free
 import qualified System.Console.ANSI as ANSI
+import System.IO
+
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Text as T
@@ -95,31 +98,10 @@ data Effect
   | Ring Bell -- visual bell ok, audible bell ok,
   deriving (Eq)
 
-type TermState = [ScopedEffect]
 
 --ring :: Bell -> TermDoc
 --ring b = pure (Ring b)
 
-eval :: Effect -> State TermState String
-eval (Push Blink)          = modify (Blink:) *> pure (ANSI.setSGRCode [ANSI.SetBlinkSpeed ANSI.SlowBlink])
-eval (Push Reverse)        = modify (Reverse:) *> pure (ANSI.setSGRCode [ANSI.SetSwapForegroundBackground True])
-eval (Push Protected)      = modify (Protected:) *> pure ""
-eval (Push Bold)           = modify (Bold:) *> pure (ANSI.setSGRCode [ANSI.SetConsoleIntensity ANSI.BoldIntensity])
-eval (Push (Foreground n)) = modify (Foreground n:) *> pure (ANSI.setSGRCode [ANSI.SetColor ANSI.Foreground ANSI.Dull n])
-eval (Push (Background n)) = modify (Background n:) *> pure (ANSI.setSGRCode [ANSI.SetColor ANSI.Background ANSI.Dull n])
-eval (Push Invisible)      = modify (Invisible:) *> pure (ANSI.setSGRCode [ANSI.SetVisible False])
-eval (Push Dim)            = modify (Dim:) *> pure ""
-eval (Push Underline)      = modify (Underline:) *> pure (ANSI.setSGRCode [ANSI.SetUnderlining ANSI.SingleUnderline])
-eval (Push Standout)       = modify (Standout:) *> pure ""
-eval (Push Nop)            = modify (Nop:) *> pure ""
-eval (Push (Else l r))     = do { x <- eval (Push l); if null x then eval (Push r) else pure x }
-eval (Ring _)              = pure ""
-eval Pop = do
-  ts <- get
-  let ts' = drop 1 ts
-  r <- concat <$> traverse  (eval . Push) (reverse ts')
-  put ts'
-  pure $ ANSI.setSGRCode [ANSI.Reset] ++ r
 
 
 type TermDoc = Doc Effect
@@ -156,26 +138,61 @@ magenta = foreground ANSI.Magenta
 cyan = foreground ANSI.Cyan
 white = foreground ANSI.White
 
-displayCap :: SimpleTermDoc -> State TermState String
-displayCap = go where
-  go (SChar c x)   = ([c] ++) <$> go x
-  go (SText _ s x) = (s ++) <$> go x
-  go (SLine i x)   = (('\n': spaces i) ++) <$> go x
-  go (SEffect e t) = (++) <$> eval e <*> go t
-  go _            = return ""
-
-spaces :: Int -> String
-spaces n | n <= 0    = ""
-         | otherwise = replicate n ' '
-
 
 -- kludgeWindowSize :: IO Int
 -- kludgeWindowSize = fail "missing ncurses"
 
+displayLn :: (MonadIO m, PrettyTerm t) => t -> m ()
+displayLn t = displayDoc 0.6 (prettyTerm t <> linebreak)
 
-display :: (MonadIO m, PrettyTerm t) => Float -> Int -> t -> m ()
-display ribbon cols doc = liftIO $ putStr $ fst $ flip runState [] $ displayCap sdoc
-  where sdoc = renderPretty ribbon cols (prettyTerm doc)
+display :: (MonadIO m, PrettyTerm t) => t -> m ()
+display = displayDoc 0.6
+
+displayDoc :: (MonadIO m, PrettyTerm t) => Float -> t -> m ()
+displayDoc = displayDoc' stdout
+
+displayDoc' :: (MonadIO m, PrettyTerm t) => Handle -> Float -> t -> m ()
+displayDoc' h ribbon doc = displayDoc'' h ribbon 80 doc
+
+displayDoc'' :: (MonadIO m, PrettyTerm t) => Handle -> Float -> Int -> t -> m ()
+displayDoc'' h ribbon cols doc = hDisplaySimpleTermDoc h $ renderPretty ribbon cols (prettyTerm doc)
+
+displaySimpleTermDoc :: MonadIO m => SimpleTermDoc -> m ()
+displaySimpleTermDoc = hDisplaySimpleTermDoc stdout
+
+hDisplaySimpleTermDoc :: MonadIO m => Handle -> SimpleTermDoc -> m ()
+hDisplaySimpleTermDoc h = liftIO . go [] where
+  spaces :: Int -> String
+  spaces n | n <= 0    = ""
+          | otherwise = replicate n ' '
+
+  go :: [ANSI.SGR] -> SimpleTermDoc -> IO ()
+  go st (SChar c x) = hPutChar h c >> go st x
+  go st (SText _ s x) = hPutStr h s >> go st x
+  go st (SLine i x) = hPutStr h ('\n':spaces i) >> go st x
+  go st (SEffect Pop x) = do
+    let st' = drop 1 st
+    ANSI.hSetSGR h $ [ANSI.Reset] ++ reverse st'
+    go st' x
+  go st (SEffect (Ring _) x) = go st x
+  go st (SEffect (Push e) x) = maybe (go st x) (\sgr -> ANSI.hSetSGR h [sgr] >> go (sgr:st) x) $ effToSGR e
+  go _ _ = pure ()
+
+  effToSGR :: ScopedEffect -> Maybe ANSI.SGR
+  effToSGR e =
+    case e of
+     Blink -> Just $ ANSI.SetBlinkSpeed ANSI.SlowBlink
+     Reverse -> Just $ ANSI.SetSwapForegroundBackground True
+     Protected -> Nothing
+     Bold -> Just $ ANSI.SetConsoleIntensity ANSI.BoldIntensity
+     Foreground n -> Just $ ANSI.SetColor ANSI.Foreground ANSI.Dull n
+     Background n -> Just $ ANSI.SetColor ANSI.Background ANSI.Dull n
+     Invisible -> Just $ ANSI.SetVisible False
+     Dim -> Nothing
+     Underline -> Just $ ANSI.SetUnderlining ANSI.SingleUnderline
+     Standout -> Nothing
+     Nop -> Nothing
+     Else l r -> effToSGR l <|> effToSGR r
 
 
 

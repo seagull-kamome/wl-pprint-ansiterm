@@ -1,5 +1,5 @@
 name:                wl-pprint-ansiterm
-version:             0.1.0.1
+version:             0.2.0.0
 synopsis:            ANSI Terminal support with wl-pprint-extras
 description:         ANSI Terminal support with wl-pprint-extras
 license:             BSD3
